@@ -26,7 +26,7 @@ buildroot_rootfs_config := $(confdir)/buildroot_rootfs_config
 
 linux_srcdir := $(srcdir)/linux
 linux_wrkdir := $(wrkdir)/linux
-linux_defconfig := $(confdir)/linux_419_defconfig
+linux_defconfig := $(confdir)/linux_defconfig
 
 vmlinux := $(linux_wrkdir)/vmlinux
 vmlinux_stripped := $(linux_wrkdir)/vmlinux-stripped
@@ -41,8 +41,12 @@ initramfs := $(wrkdir)/initramfs.cpio.gz
 pk_srcdir := $(srcdir)/riscv-pk
 pk_wrkdir := $(wrkdir)/riscv-pk
 pk_payload_wrkdir := $(wrkdir)/riscv-payload-pk
+pk_dtb_wrkdir := $(wrkdir)/riscv-dtb-pk
+pk_dtb_payload_wrkdir := $(wrkdir)/riscv-dtb-payload-pk
 bbl := $(pk_wrkdir)/bbl
 bbl_payload :=$(pk_payload_wrkdir)/bbl
+bbl_dtb := $(pk_dtb_wrkdir)/bbl
+bbl_dtb_payload := $(pk_dtb_payload_wrkdir)/bbl
 bbl_bin := $(wrkdir)/bbl.bin
 fit := $(wrkdir)/image.fit
 
@@ -141,6 +145,9 @@ endif
 
 $(vmlinux): $(linux_srcdir) $(linux_wrkdir)/.config $(target_gcc)
 	$(MAKE) -C $< O=$(linux_wrkdir) \
+		CONFIG_INITRAMFS_SOURCE="$(confdir)/initramfs.txt $(buildroot_initramfs_sysroot)" \
+		CONFIG_INITRAMFS_ROOT_UID=$(shell id -u) \
+		CONFIG_INITRAMFS_ROOT_GID=$(shell id -g) \
 		ARCH=riscv \
 		CROSS_COMPILE=$(CROSS_COMPILE) \
 		PATH=$(RVPATH) \
@@ -177,7 +184,8 @@ $(bbl): $(pk_srcdir)
 	cd $(pk_wrkdir) && PATH=$(RVPATH) $</configure \
 		--host=$(target) \
 		--enable-logo \
-		--with-logo=$(abspath conf/sifive_logo.txt)
+		--enable-zero-bss \
+		--with-logo=$(abspath conf/openedges_logo.txt)
 	CFLAGS="-mabi=$(ABI) -march=$(ISA)" $(MAKE) PATH=$(RVPATH) -C $(pk_wrkdir)
 
 # Workaround for SPIKE until it can support loading bbl and
@@ -189,10 +197,35 @@ $(bbl_payload): $(pk_srcdir) $(vmlinux_stripped)
 	cd $(pk_payload_wrkdir) && PATH=$(RVPATH) $</configure \
 		--host=$(target) \
 		--enable-logo \
+		--enable-zero-bss \
 		--with-payload=$(vmlinux_stripped) \
-		--with-logo=$(abspath conf/sifive_logo.txt)
+		--with-logo=$(abspath conf/openedges_logo.txt)
 	CFLAGS="-mabi=$(ABI) -march=$(ISA)" $(MAKE) PATH=$(RVPATH) -C $(pk_payload_wrkdir)
 
+dtb := $(wrkdir)/device_tree.dtb
+$(dtb): $(confdir)/device_tree.dts
+	dtc -I dts -O dtb -o $@ $<
+
+$(bbl_dtb): $(pk_srcdir) $(dtb)
+	rm -rf $(pk_dtb_wrkdir)
+	mkdir -p $(pk_dtb_wrkdir)
+	cd $(pk_dtb_wrkdir) && PATH=$(RVPATH) $</configure \
+		--host=$(target) \
+		--enable-logo \
+		--enable-zero-bss \
+		--with-logo=$(abspath conf/openedges_logo.txt)
+	CFLAGS="-mabi=$(ABI) -march=$(ISA)" $(MAKE) PATH=$(RVPATH) DEVICE_TREE=$(dtb) -C $(pk_dtb_wrkdir)
+
+$(bbl_dtb_payload): $(pk_srcdir) $(vmlinux_stripped) $(dtb)
+	rm -rf $(pk_dtb_payload_wrkdir)
+	mkdir -p $(pk_dtb_payload_wrkdir)
+	cd $(pk_dtb_payload_wrkdir) && PATH=$(RVPATH) $</configure \
+		--host=$(target) \
+		--enable-logo \
+		--enable-zero-bss \
+		--with-payload=$(vmlinux_stripped) \
+		--with-logo=$(abspath conf/openedges_logo.txt)
+	CFLAGS="-mabi=$(ABI) -march=$(ISA)" $(MAKE) PATH=$(RVPATH) DEVICE_TREE=$(dtb) -C $(pk_dtb_payload_wrkdir)
 
 $(bbl_bin): $(bbl)
 	PATH=$(RVPATH) $(target)-objcopy -S -O binary --change-addresses -0x80000000 $< $@
@@ -271,6 +304,11 @@ qemu-rootfs: $(qemu) $(bbl) $(vmlinux) $(initramfs) $(rootfs)
 		-drive file=$(rootfs),format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
 		-netdev user,id=net0 -device virtio-net-device,netdev=net0
 
+.PHONY: bbl_dtb
+bbl_dtb: $(bbl_dtb)
+
+.PHONY: bbl_dtb_payload
+bbl_dtb_payload: $(bbl_dtb_payload)
 
 .PHONY: uboot
 uboot: $(uboot)
